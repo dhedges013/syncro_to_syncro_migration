@@ -1,7 +1,7 @@
 #from syncro_utils import syncro_api_call
 from pprint import pprint
-from typing import Any, Dict
-import logging
+from typing import Any, Dict, List
+import requests
 import time
 
 from syncro_configs import get_logger
@@ -9,12 +9,12 @@ from syncro_configs import get_logger
 # Define API keys and subdomains for the tenants
 
 #old Tenant
-syncro_tenant_source_api_key = "yourAPI Key"
-syncro_tenant_source_base_url = "https://subdomain.syncromsp.com/api/v1"
+syncro_tenant_source_api_key = "API_KEY"
+syncro_tenant_source_base_url = "https://SUBDOMAIN.syncromsp.com/api/v1"
 
 #New Tenant
-syncro_tenant_dest_api_key = "yourAPI Key"
-syncro_tenant_dest_base_url = "https://subdomain.syncromsp.com/api/v1"
+syncro_tenant_dest_api_key = "API_KEY"
+syncro_tenant_dest_base_url = "https://SUBDOMAIN.syncromsp.com/api/v1"
 
 
 logger = get_logger(__name__)
@@ -47,7 +47,34 @@ def syncro_api_call(api_key: str, base_url: str, endpoint: str, method: str = "G
     response.raise_for_status()
     return response.json()
 
+def get_all_customers(api_key: str, base_url: str) -> List[Dict[str, Any]]:
+    """
+    Retrieves all customers from Syncro API, handling pagination.
 
+    Args:
+        api_key (str): The API key for authorization.
+        base_url (str): The base URL of the Syncro tenant.
+
+    Returns:
+        List[Dict[str, Any]]: A list of all customer records.
+    """
+    all_customers = []
+    page = 1
+
+    while True:
+        endpoint = f"/customers?page={page}"
+        response = syncro_api_call(api_key, base_url, endpoint)
+
+        if "customers" in response:
+            all_customers.extend(response["customers"])
+
+        if "meta" in response and response["meta"]["page"] < response["meta"]["total_pages"]:
+            page += 1
+            time.sleep(0.5)  # Respect rate limits
+        else:
+            break
+
+    return all_customers
 
 
 def gather_and_compare_customers():
@@ -55,26 +82,14 @@ def gather_and_compare_customers():
     Gather and Compare Customer Lists
     If the newer Tenant is missing a match, creates a matching customer
     """
-    # Fetch customer lists for both tenants
-    customers_tenant_source = syncro_api_call(
-        api_key=syncro_tenant_source_api_key,
-        base_url=syncro_tenant_source_base_url,
-        endpoint="customers"
-    )
-
-    customers_tenant_dest = syncro_api_call(
-        api_key=syncro_tenant_dest_api_key,
-        base_url=syncro_tenant_dest_base_url,
-        endpoint="customers"
-    )
-
-    # Extract list of customer dictionaries from API responses
-    source_customers_list = customers_tenant_source.get("customers", [])
+ # Fetch all customers for both tenants
+    source_customers_list = get_all_customers(syncro_tenant_source_api_key, syncro_tenant_source_base_url)
     logger.info(f"Source Customers: {len(source_customers_list)}")
-    dest_customers_list = customers_tenant_dest.get("customers", [])
-    logger.info(f"Destination Customers: {len(dest_customers_list)} ")
 
-    # Extract 'business_name' from each customer dictionary in the source tenant
+    dest_customers_list = get_all_customers(syncro_tenant_dest_api_key, syncro_tenant_dest_base_url)
+    logger.info(f"Destination Customers: {len(dest_customers_list)}")
+
+     # Extract 'business_name' from each customer dictionary in the source tenant
     business_names_source = [
         customer.get("business_name", "Unknown")
         for customer in source_customers_list
@@ -93,8 +108,7 @@ def gather_and_compare_customers():
     missing_businesses = [
         name for name in business_names_source if name not in business_names_dest
     ]
-
-
+    
     logger.warning(f"❌ Warning! Number of Mssing: {len(missing_businesses)} Missing businesses to be created: {missing_businesses}")
 
     for business_name in missing_businesses:
@@ -115,6 +129,8 @@ def gather_and_compare_customers():
         except Exception as e:
             print(f"Failed to create business: {business_name}, Error: {e}")
             logger.error(f"Failed to create business: {business_name}, Error: {e}")
+
+    return source_customers_list, dest_customers_list
 
 
 
@@ -203,22 +219,6 @@ def syncro_create_ticket_comment(ticket_id: int, comment_data: Dict[str, Any]):
         data=comment_data
     )
 
-def syncro_get_customer_list(api_key: str, base_url: str) -> Dict[str, Any]:
-    """
-    Fetch a list of customers from a Syncro tenant.
-
-    Args:
-        api_key (str): The API key for authorization.
-        base_url (str): The base URL of the Syncro tenant.
-
-    Returns:
-        Dict[str, Any]: The JSON response containing the list of customers.
-    """
-    return syncro_api_call(
-        api_key=api_key,
-        base_url=base_url,        
-        endpoint="customers"
-    )
 
 def syncro_get_customer_tickets(api_key: str, base_url: str, customer_id: int) -> Dict[str, Any]:
     """
@@ -239,18 +239,8 @@ def syncro_get_customer_tickets(api_key: str, base_url: str, customer_id: int) -
         
     )  
 
-def syncro_get_source_customers():
-    """
-    Fetch customer lists for both tenants
-    """
-    source_customers = syncro_get_customer_list(
-        api_key=syncro_tenant_source_api_key,
-        base_url=syncro_tenant_source_base_url
-    )
 
-    return source_customers
-
-def syncro_lookup_dest_customer_id(customer_name: str):
+def syncro_lookup_dest_customer_id(customer_name: str,dest_customers):
     """
     Lookup the ID of a customer in the destination tenant.
 
@@ -260,46 +250,39 @@ def syncro_lookup_dest_customer_id(customer_name: str):
     Returns:
         int: The customer ID if found, otherwise None.
     """
-    dest_customers = syncro_get_customer_list(
-        api_key=syncro_tenant_dest_api_key,
-        base_url=syncro_tenant_dest_base_url
-    )
-
-    for customer in dest_customers.get("customers", []):
+    for customer in dest_customers:
         if customer.get("business_name") == customer_name:
-            return customer.get("id")    
-
+            return customer.get("id"), customer.get("business_name")
     return None
 
-def myfunction():
+def myfunction(source_customers, dest_customers):
 
-    source_customers = syncro_get_source_customers()
-    logger.info(f"Source Customers: {len(source_customers.get('customers', []))}")
-
-    for customer in source_customers.get("customers", []):
-        
+    logger.info(f"in myfunction, Source Customers: {len(source_customers)}")
+    #print(f"sourc_customers: {source_customers[0]}")
+    #input("Press Enter to Continue...")
+    for customer in source_customers:        
         source_customer_name = customer.get("business_name")
         source_customer_id = customer.get("id")
         logger.info(f"Processing source customer: {customer.get('business_name')}, Source Customer ID: {source_customer_id}")
-
-        dest_customer_id = syncro_lookup_dest_customer_id(source_customer_name)
+        logger.info(f"Checking if customer '{source_customer_name}' exists in destination tenant...")
+        dest_customer_id, dest_customer_name = syncro_lookup_dest_customer_id(source_customer_name,dest_customers)
 
         if dest_customer_id:
-            logger.info(f"Customer '{source_customer_name}' found in destination tenant. with ID: {dest_customer_id}. Fetching tickets...")
+            logger.info(f"Source Customer '{source_customer_name}' found in destination tenant. with ID: {dest_customer_id} and name: {dest_customer_name}. Fetching tickets...")
 
             dest_customer_tickets = syncro_get_customer_tickets(
                 api_key=syncro_tenant_dest_api_key,
                 base_url=syncro_tenant_dest_base_url,
                 customer_id=dest_customer_id
             )
-            logger.info(f"Customer '{source_customer_name}' has {len(dest_customer_tickets.get('tickets', []))} tickets in destination tenant.")
+            logger.info(f"dest_customer_name: '{dest_customer_name}' has {len(dest_customer_tickets.get('tickets', []))} tickets in destination tenant.")
 
             source_customer_tickets = syncro_get_customer_tickets(
                 api_key=syncro_tenant_source_api_key,
                 base_url=syncro_tenant_source_base_url,
                 customer_id=source_customer_id
             )            
-            logger.info(f"Customer '{source_customer_name}' has {len(source_customer_tickets.get('tickets', []))} tickets in source tenant.")
+            logger.info(f"source_customer_name: '{source_customer_name}' has {len(source_customer_tickets.get('tickets', []))} tickets in source tenant.")
 
             for source_ticket in source_customer_tickets.get("tickets", []):
                 source_ticket_subject = source_ticket.get("subject")
@@ -326,9 +309,7 @@ def myfunction():
                     #pprint(source_ticket)
                     #input("Press Enter to Continue...")
                     syncro_create_dest_ticket(source_ticket, dest_customer_id)
-                    
-
-
+                 
 
 def gather_and_compare_tickets():
     """
@@ -403,19 +384,11 @@ def gather_and_compare_tickets():
     #input("Review the Logs and Press Enter to Continue...")
 
 
-
-
-
-
 def check_if_contact_exists():
     pass
 
 
-
-
-
 if __name__ == "__main__":
-    gather_and_compare_customers()
-    
+    source_customers, dest_customers = gather_and_compare_customers()
     gather_and_compare_tickets()
-    myfunction()
+    myfunction(source_customers, dest_customers)
