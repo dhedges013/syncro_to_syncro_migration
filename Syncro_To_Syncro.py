@@ -1,20 +1,75 @@
 #from syncro_utils import syncro_api_call
 from pprint import pprint
 from typing import Any, Dict, List
+import json
+import os
 import requests
 import time
 
 from syncro_configs import get_logger
 
-# Define API keys and subdomains for the tenants
+CONFIG_PATH = os.path.join(os.path.dirname(__file__), "syncro_tenants.json")
 
-#old Tenant
-syncro_tenant_source_api_key = "API_KEY"
-syncro_tenant_source_base_url = "https://SUBDOMAIN.syncromsp.com/api/v1"
 
-#New Tenant
-syncro_tenant_dest_api_key = "API_KEY"
-syncro_tenant_dest_base_url = "https://SUBDOMAIN.syncromsp.com/api/v1"
+def _prompt_for_value(label: str) -> str:
+    value = input(f"Enter {label}: ").strip()
+    while not value:
+        value = input(f"Enter {label}: ").strip()
+    return value
+
+
+def load_syncro_tenant_config(config_path: str = CONFIG_PATH) -> Dict[str, Dict[str, str]]:
+    config: Dict[str, Dict[str, str]] = {}
+
+    if os.path.exists(config_path):
+        try:
+            raw = ""
+            with open(config_path, "r", encoding="utf-8") as f:
+                raw = f.read()
+            if raw.strip():
+                config = json.loads(raw)
+        except json.JSONDecodeError:
+            print(f"Config file '{config_path}' is not valid JSON. Prompting for values.")
+        except OSError as exc:
+            print(f"Unable to read config file '{config_path}': {exc}. Prompting for values.")
+
+    source = config.get("source", {}) if isinstance(config, dict) else {}
+    destination = config.get("destination", {}) if isinstance(config, dict) else {}
+
+    source_api_key = source.get("api_key") or _prompt_for_value("source API key")
+    source_base_url = source.get("base_url") or _prompt_for_value("source base URL")
+    dest_api_key = destination.get("api_key") or _prompt_for_value("destination API key")
+    dest_base_url = destination.get("base_url") or _prompt_for_value("destination base URL")
+
+    new_config = {
+        "source": {
+            "api_key": source_api_key,
+            "base_url": source_base_url,
+        },
+        "destination": {
+            "api_key": dest_api_key,
+            "base_url": dest_base_url,
+        },
+    }
+
+    if new_config != config:
+        try:
+            with open(config_path, "w", encoding="utf-8") as f:
+                json.dump(new_config, f, indent=2)
+        except OSError as exc:
+            print(f"Unable to write config file '{config_path}': {exc}.")
+
+    return new_config
+
+
+config = load_syncro_tenant_config()
+
+# Define API keys and base URLs for the tenants
+syncro_tenant_source_api_key = config["source"]["api_key"]
+syncro_tenant_source_base_url = config["source"]["base_url"]
+
+syncro_tenant_dest_api_key = config["destination"]["api_key"]
+syncro_tenant_dest_base_url = config["destination"]["base_url"]
 
 
 logger = get_logger(__name__)
